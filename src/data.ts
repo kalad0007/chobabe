@@ -364,3 +364,26 @@ export const checkClassCode = async (code: string): Promise<boolean> => {
   if (error || !data) return false;
   return true;
 };
+
+// --- Audio Cache Operations ---
+
+export const getCachedAudio = async (text: string): Promise<string | null> => {
+  const { data, error } = await supabase
+    .from('tts_cache')
+    .select('audio_base64')
+    .eq('text_hash', text)
+    .single();
+
+  if (error || !data) return null;
+  return data.audio_base64;
+};
+
+export const saveCachedAudio = async (text: string, audioBase64: string) => {
+  const { error } = await supabase
+    .from('tts_cache')
+    .upsert({ text_hash: text, audio_base64: audioBase64 });
+  
+  if (error) {
+    console.error('Error saving audio cache:', error);
+  }
+};

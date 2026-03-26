@@ -3,8 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback, useMemo, Component, ErrorInfo, ReactNode } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, Component, ErrorInfo, ReactNode } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import { GoogleGenAI, Modality } from "@google/genai";
 import { 
   Play, 
   Pause, 
@@ -28,7 +29,7 @@ import {
   Layout
 } from 'lucide-react';
 import { TeacherMode } from './TeacherMode';
-import { SAMPLE_LESSON, Lesson, Sentence, Word, fetchLessons, Profile, saveHomeworkResult } from './data';
+import { SAMPLE_LESSON, Lesson, Sentence, Word, fetchLessons, Profile, saveHomeworkResult, getCachedAudio, saveCachedAudio } from './data';
 import { Loader2, LogOut, AlertTriangle } from 'lucide-react';
 import { Auth } from './Auth';
 import { StudentDashboard } from './StudentDashboard';
@@ -203,6 +204,10 @@ export default function App() {
   const [isPreviewMode, setIsPreviewMode] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
 
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const audioCacheRef = useRef<Map<string, string>>(new Map());
+
   // Auth check
   useEffect(() => {
     const checkAuth = async () => {
@@ -308,20 +313,125 @@ export default function App() {
   };
 
   // --- Audio Logic ---
-  const speak = useCallback((text: string, onEnd?: () => void) => {
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.lang = 'en-US';
-    utterance.rate = 0.9;
-    utterance.onend = () => {
+  const playAudioFromBase64 = async (base64Audio: string, onEnd?: () => void) => {
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+    }
+    const ctx = audioContextRef.current;
+    
+    if (ctx.state === 'suspended') {
+      await ctx.resume();
+    }
+    
+    const binaryString = window.atob(base64Audio);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    
+    const int16Data = new Int16Array(bytes.buffer);
+    const float32Data = new Float32Array(int16Data.length);
+    for (let i = 0; i < int16Data.length; i++) {
+      float32Data[i] = int16Data[i] / 32768.0;
+    }
+    
+    const buffer = ctx.createBuffer(1, float32Data.length, 24000);
+    buffer.getChannelData(0).set(float32Data);
+    
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    source.onended = () => {
       setIsListening(false);
       if (onEnd) onEnd();
     };
+    currentSourceRef.current = source;
+    source.start();
+  };
+
+  const speak = useCallback(async (text: string, onEnd?: () => void) => {
+    if (!text) return;
+    
+    // Stop any current speaking
+    if (currentSourceRef.current) {
+      try {
+        currentSourceRef.current.stop();
+      } catch (e) {}
+      currentSourceRef.current = null;
+    }
+    window.speechSynthesis.cancel();
+    
     setIsListening(true);
-    window.speechSynthesis.speak(utterance);
+
+    // 1. Check local memory cache first (fastest)
+    if (audioCacheRef.current.has(text)) {
+      try {
+        await playAudioFromBase64(audioCacheRef.current.get(text)!, onEnd);
+        return;
+      } catch (e) {
+        console.error("Local cache playback error:", e);
+      }
+    }
+
+    // 2. Check shared database cache (Supabase)
+    try {
+      const dbCachedAudio = await getCachedAudio(text);
+      if (dbCachedAudio) {
+        audioCacheRef.current.set(text, dbCachedAudio); // Update local cache
+        await playAudioFromBase64(dbCachedAudio, onEnd);
+        return;
+      }
+    } catch (e) {
+      console.error("DB cache fetch error:", e);
+    }
+    
+    // 3. If not in any cache, call Gemini API
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash-preview-tts",
+        contents: [{ parts: [{ text: `Say clearly in a natural American English accent: ${text}` }] }],
+        config: {
+          responseModalities: [Modality.AUDIO],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: 'Zephyr' },
+            },
+          },
+        },
+      });
+
+      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      if (base64Audio) {
+        // Save to both caches
+        audioCacheRef.current.set(text, base64Audio);
+        await saveCachedAudio(text, base64Audio);
+        
+        await playAudioFromBase64(base64Audio, onEnd);
+      } else {
+        throw new Error("No audio data received from Gemini");
+      }
+    } catch (error) {
+      console.error("Gemini TTS Error:", error);
+      // Fallback to browser TTS
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'en-US';
+      utterance.rate = 0.9;
+      utterance.onend = () => {
+        setIsListening(false);
+        if (onEnd) onEnd();
+      };
+      window.speechSynthesis.speak(utterance);
+    }
   }, []);
 
   const stopSpeaking = () => {
+    if (currentSourceRef.current) {
+      try {
+        currentSourceRef.current.stop();
+      } catch (e) {}
+      currentSourceRef.current = null;
+    }
     window.speechSynthesis.cancel();
     setIsListening(false);
   };
