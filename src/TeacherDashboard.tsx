@@ -744,7 +744,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ profile, onP
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.9 }}
-              className="bg-white w-full max-w-4xl max-h-[90vh] rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col"
+              className="bg-white w-full max-w-4xl max-h-[90vh] rounded-[2.5rem] shadow-2xl overflow-y-auto flex flex-col"
             >
               <TeacherMode 
                 onClose={() => setShowLessonEditor(false)} 

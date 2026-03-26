@@ -53,6 +53,11 @@ type LessonStep =
   | 'HOMEWORK_VOCAB_TEST'
   | 'COMPLETED';
 
+interface UnscrambleWord {
+  id: string;
+  text: string;
+}
+
 // --- Components ---
 
 const ProgressBar = ({ current, total }: { current: number; total: number }) => (
@@ -97,6 +102,83 @@ const Button = ({
   );
 };
 
+interface HomeworkVocabTestProps {
+  vocab: Lesson['vocab'];
+  vocabTestIndex: number;
+  setVocabTestIndex: React.Dispatch<React.SetStateAction<number>>;
+  setVocabTestScore: React.Dispatch<React.SetStateAction<number>>;
+  setFeedback: React.Dispatch<React.SetStateAction<{ message: string; type: 'success' | 'error' } | null>>;
+  nextStep: () => Promise<void>;
+  speak: (text: string, onEnd?: () => void) => void;
+}
+
+const HomeworkVocabTest = ({ 
+  vocab, 
+  vocabTestIndex, 
+  setVocabTestIndex, 
+  setVocabTestScore, 
+  setFeedback, 
+  nextStep,
+  speak
+}: HomeworkVocabTestProps) => {
+  const current = vocab[vocabTestIndex];
+  
+  const options = useMemo(() => {
+    if (!current) return [];
+    const others = vocab.filter(v => v.word !== current.word).sort(() => Math.random() - 0.5).slice(0, 3);
+    return [current, ...others].sort(() => Math.random() - 0.5);
+  }, [vocabTestIndex, current, vocab]);
+
+  if (!current) return (
+    <div className="text-center py-20">
+      <p className="text-xl font-bold text-gray-400">이 레슨에는 단어가 없습니다.</p>
+      <Button onClick={nextStep} className="mt-4">다음으로 넘어가기</Button>
+    </div>
+  );
+
+  return (
+    <div className="space-y-8 py-8">
+      <div className="flex justify-between items-center">
+        <h2 className="text-2xl font-bold text-purple-600">과제 3: 단어 테스트</h2>
+        <span className="font-bold">{vocabTestIndex + 1} / {vocab.length}</span>
+      </div>
+
+      <div className="bg-white p-12 rounded-[40px] shadow-lg border border-purple-100 text-center space-y-8">
+        <p className="text-sm font-bold text-gray-400 uppercase tracking-widest">다음 단어의 뜻은?</p>
+        <h3 className="text-5xl font-black text-gray-900">{current.word}</h3>
+        
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4">
+          {options.map((opt, i) => (
+            <button 
+              key={i}
+              onClick={() => {
+                if (opt.word === current.word) {
+                  setVocabTestScore(prev => prev + 1);
+                  setFeedback({ message: "정답! 🌟", type: 'success' });
+                  setTimeout(() => {
+                    setFeedback(null);
+                    if (vocabTestIndex < vocab.length - 1) {
+                      setVocabTestIndex(vocabTestIndex + 1);
+                    } else {
+                      nextStep();
+                    }
+                  }, 1000);
+                } else {
+                  setFeedback({ message: "틀렸어요! 다시 생각해보세요.", type: 'error' });
+                  setTimeout(() => setFeedback(null), 1500);
+                }
+              }}
+              className="p-6 rounded-2xl border-2 border-gray-100 hover:border-purple-400 hover:bg-purple-50 transition-all text-xl font-bold text-gray-700"
+            >
+              {opt.meaning}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // --- Main App ---
 
 export default function App() {
@@ -113,8 +195,8 @@ export default function App() {
   const [showTranslation, setShowTranslation] = useState(false);
   const [homeworkScore, setHomeworkScore] = useState(0);
   const [dictationInput, setDictationInput] = useState('');
-  const [unscrambleWords, setUnscrambleWords] = useState<string[]>([]);
-  const [userUnscramble, setUserUnscramble] = useState<string[]>([]);
+  const [unscrambleWords, setUnscrambleWords] = useState<UnscrambleWord[]>([]);
+  const [userUnscramble, setUserUnscramble] = useState<UnscrambleWord[]>([]);
   const [vocabTestIndex, setVocabTestIndex] = useState(0);
   const [vocabTestScore, setVocabTestScore] = useState(0);
   const [feedback, setFeedback] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -305,18 +387,21 @@ export default function App() {
     const sentenceObj = lesson.sentences[index];
     if (!sentenceObj) return;
     const sentence = sentenceObj.english;
-    const words = sentence.replace(/[.,!]/g, '').split(' ').sort(() => Math.random() - 0.5);
+    const words = sentence.replace(/[.,!]/g, '').split(' ').map((text, i) => ({
+      id: `word-${i}-${text}`,
+      text
+    })).sort(() => Math.random() - 0.5);
     setUnscrambleWords(words);
     setUserUnscramble([]);
   };
 
-  const handleUnscrambleWordClick = (word: string, fromUser: boolean) => {
+  const handleUnscrambleWordClick = (wordObj: UnscrambleWord, fromUser: boolean) => {
     if (fromUser) {
-      setUserUnscramble(prev => prev.filter(w => w !== word));
-      setUnscrambleWords(prev => [...prev, word]);
+      setUserUnscramble(prev => prev.filter(w => w.id !== wordObj.id));
+      setUnscrambleWords(prev => [...prev, wordObj]);
     } else {
-      setUnscrambleWords(prev => prev.filter(w => w !== word));
-      setUserUnscramble(prev => [...prev, word]);
+      setUnscrambleWords(prev => prev.filter(w => w.id !== wordObj.id));
+      setUserUnscramble(prev => [...prev, wordObj]);
     }
   };
 
@@ -663,7 +748,7 @@ export default function App() {
     const current = lesson.sentences[currentSentenceIndex];
     if (!current) return null;
     const target = (current.english || '').replace(/[.,!]/g, '').toLowerCase();
-    const currentStr = userUnscramble.join(' ').toLowerCase();
+    const currentStr = userUnscramble.map(w => w.text).join(' ').toLowerCase();
     const isCorrect = currentStr === target;
 
     const totalHomeworkSentences = Math.min(5, lesson.sentences.length);
@@ -680,28 +765,28 @@ export default function App() {
         </div>
 
         <div className="min-h-[120px] bg-white p-6 rounded-3xl border-2 border-dashed border-purple-200 flex flex-wrap gap-2 items-center justify-center">
-          {userUnscramble.map((word, i) => (
+          {userUnscramble.map((wordObj, i) => (
             <motion.button 
-              layoutId={`word-${word}`}
-              key={i}
-              onClick={() => handleUnscrambleWordClick(word, true)}
+              layoutId={wordObj.id}
+              key={wordObj.id}
+              onClick={() => handleUnscrambleWordClick(wordObj, true)}
               className="bg-purple-600 text-white px-4 py-2 rounded-xl font-bold shadow-sm"
             >
-              {word}
+              {wordObj.text}
             </motion.button>
           ))}
           {userUnscramble.length === 0 && <span className="text-gray-300 font-medium">단어를 아래에서 선택하세요</span>}
         </div>
 
         <div className="flex flex-wrap gap-2 justify-center p-6">
-          {unscrambleWords.map((word, i) => (
+          {unscrambleWords.map((wordObj, i) => (
             <motion.button 
-              layoutId={`word-${word}`}
-              key={i}
-              onClick={() => handleUnscrambleWordClick(word, false)}
+              layoutId={wordObj.id}
+              key={wordObj.id}
+              onClick={() => handleUnscrambleWordClick(wordObj, false)}
               className="bg-gray-100 text-gray-700 px-4 py-2 rounded-xl font-bold border border-gray-200 hover:bg-gray-200"
             >
-              {word}
+              {wordObj.text}
             </motion.button>
           ))}
         </div>
@@ -728,62 +813,6 @@ export default function App() {
           >
             {currentSentenceIndex < totalHomeworkSentences - 1 ? "다음 문제" : "마지막 과제로"} <ChevronRight />
           </Button>
-        </div>
-      </div>
-    );
-  };
-
-  const renderHomeworkVocabTest = () => {
-    const current = lesson.vocab[vocabTestIndex];
-    if (!current) return (
-      <div className="text-center py-20">
-        <p className="text-xl font-bold text-gray-400">이 레슨에는 단어가 없습니다.</p>
-        <Button onClick={nextStep} className="mt-4">다음으로 넘어가기</Button>
-      </div>
-    );
-    const options = useMemo(() => {
-      const others = lesson.vocab.filter(v => v.word !== current.word).sort(() => Math.random() - 0.5).slice(0, 3);
-      return [current, ...others].sort(() => Math.random() - 0.5);
-    }, [vocabTestIndex, current]);
-
-    return (
-      <div className="space-y-8 py-8">
-        <div className="flex justify-between items-center">
-          <h2 className="text-2xl font-bold text-purple-600">과제 3: 단어 테스트</h2>
-          <span className="font-bold">{vocabTestIndex + 1} / {lesson.vocab.length}</span>
-        </div>
-
-        <div className="bg-white p-12 rounded-[40px] shadow-lg border border-purple-100 text-center space-y-8">
-          <p className="text-sm font-bold text-gray-400 uppercase tracking-widest">다음 단어의 뜻은?</p>
-          <h3 className="text-5xl font-black text-gray-900">{current.word}</h3>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4">
-            {options.map((opt, i) => (
-              <button 
-                key={i}
-                onClick={() => {
-                  if (opt.word === current.word) {
-                    setVocabTestScore(prev => prev + 1);
-                    setFeedback({ message: "정답! 🌟", type: 'success' });
-                    setTimeout(() => {
-                      setFeedback(null);
-                      if (vocabTestIndex < lesson.vocab.length - 1) {
-                        setVocabTestIndex(vocabTestIndex + 1);
-                      } else {
-                        nextStep();
-                      }
-                    }, 1000);
-                  } else {
-                    setFeedback({ message: "틀렸어요! 다시 생각해보세요.", type: 'error' });
-                    setTimeout(() => setFeedback(null), 1500);
-                  }
-                }}
-                className="p-6 rounded-2xl border-2 border-gray-100 hover:border-purple-400 hover:bg-purple-50 transition-all text-xl font-bold text-gray-700"
-              >
-                {opt.meaning}
-              </button>
-            ))}
-          </div>
         </div>
       </div>
     );
@@ -958,7 +987,17 @@ export default function App() {
             {step === 'HOMEWORK_INTRO' && renderHomeworkIntro()}
             {step === 'HOMEWORK_DICTATION' && renderHomeworkDictation()}
             {step === 'HOMEWORK_UNSCRAMBLE' && renderHomeworkUnscramble()}
-            {step === 'HOMEWORK_VOCAB_TEST' && renderHomeworkVocabTest()}
+            {step === 'HOMEWORK_VOCAB_TEST' && (
+              <HomeworkVocabTest 
+                vocab={lesson.vocab}
+                vocabTestIndex={vocabTestIndex}
+                setVocabTestIndex={setVocabTestIndex}
+                setVocabTestScore={setVocabTestScore}
+                setFeedback={setFeedback}
+                nextStep={nextStep}
+                speak={speak}
+              />
+            )}
             {step === 'COMPLETED' && renderCompleted()}
           </motion.div>
         </AnimatePresence>

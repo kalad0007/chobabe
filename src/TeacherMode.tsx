@@ -1,18 +1,36 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, Save, X, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
+import { Plus, Trash2, Save, X, ChevronDown, ChevronUp, Loader2, Sparkles, Wand2 } from 'lucide-react';
 import { Lesson, Sentence, Word, fetchLessons, saveLessonToSupabase, deleteLessonFromSupabase } from './data';
+import { GoogleGenAI, Type } from "@google/genai";
 
 interface TeacherModeProps {
   onClose: () => void;
   onLessonAdded: () => void;
 }
 
+const GRADE_LEVELS = [
+  'Elementary 1-2',
+  'Elementary 3-4',
+  'Elementary 5-6',
+  'Middle School 1',
+  'Middle School 2',
+  'Middle School 3',
+  'High School',
+  'Adult/General'
+];
+
 export const TeacherMode: React.FC<TeacherModeProps> = ({ onClose, onLessonAdded }) => {
   const [lessons, setLessons] = useState<Lesson[]>([]);
   const [editingLesson, setEditingLesson] = useState<Partial<Lesson> | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  
+  // AI Generation State
+  const [aiTopic, setAiTopic] = useState('');
+  const [aiLevel, setAiLevel] = useState(GRADE_LEVELS[1]); // Default to Elem 3-4
+  const [showAiPanel, setShowAiPanel] = useState(false);
 
   useEffect(() => {
     loadLessons();
@@ -38,13 +56,71 @@ export const TeacherMode: React.FC<TeacherModeProps> = ({ onClose, onLessonAdded
       id: generateId(),
       title: '',
       topic: '',
-      level: 'Elementary',
+      level: GRADE_LEVELS[1],
       goal: '',
       sentences: [],
       grammar: { point: '', explanation: '', example: '' },
       vocab: [],
       comprehensionQuestions: []
     });
+  };
+
+  const generateLessonWithAI = async () => {
+    if (!aiTopic) {
+      setErrorMessage('AI 생성을 위한 주제를 입력해주세요.');
+      return;
+    }
+
+    setIsGenerating(true);
+    setErrorMessage(null);
+
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+      
+      const prompt = `
+        Create a comprehensive English lesson for ${aiLevel} students about "${aiTopic}".
+        The output must be a valid JSON object matching this TypeScript interface:
+        
+        interface Lesson {
+          title: string;
+          topic: string;
+          level: string; // Should be "${aiLevel}"
+          goal: string;
+          sentences: { id: number; english: string; korean: string }[]; // Exactly 10 sentences
+          grammar: { point: string; explanation: string; example: string };
+          vocab: { word: string; meaning: string; example: string }[]; // Exactly 10 words
+          comprehensionQuestions: { question: string; options: string[]; answer: number }[]; // Exactly 3 questions, answer is 0-3 index
+        }
+
+        Important:
+        1. Sentences should form a simple story or dialogue.
+        2. Explanations and meanings must be in Korean.
+        3. Ensure the difficulty matches ${aiLevel}.
+        4. Return ONLY the JSON object, no markdown formatting, no backticks.
+      `;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json"
+        }
+      });
+
+      const result = JSON.parse(response.text);
+      
+      setEditingLesson({
+        ...result,
+        id: generateId()
+      });
+      setShowAiPanel(false);
+      setAiTopic('');
+    } catch (err: any) {
+      console.error('AI Generation Error:', err);
+      setErrorMessage('AI 레슨 생성 중 오류가 발생했습니다: ' + (err.message || '알 수 없는 오류'));
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   const handleSave = async () => {
@@ -86,14 +162,14 @@ export const TeacherMode: React.FC<TeacherModeProps> = ({ onClose, onLessonAdded
 
   if (editingLesson) {
     return (
-      <div className="bg-white p-8 rounded-[40px] shadow-2xl border border-gray-100 space-y-8 max-w-4xl mx-auto">
+      <div className="p-8 space-y-8 w-full">
         <div className="flex justify-between items-center">
           <h2 className="text-3xl font-black text-gray-900">새 레슨 만들기</h2>
           <button onClick={() => setEditingLesson(null)} className="p-2 hover:bg-gray-100 rounded-full"><X /></button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="space-y-2">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="space-y-2 md:col-span-2">
             <label className="text-sm font-bold text-gray-500 uppercase">레슨 제목</label>
             <input 
               type="text" 
@@ -104,6 +180,18 @@ export const TeacherMode: React.FC<TeacherModeProps> = ({ onClose, onLessonAdded
             />
           </div>
           <div className="space-y-2">
+            <label className="text-sm font-bold text-gray-500 uppercase">학년/수준 (Grade)</label>
+            <select 
+              value={editingLesson.level} 
+              onChange={e => setEditingLesson({...editingLesson, level: e.target.value})}
+              className="w-full p-4 bg-gray-50 border-2 border-transparent focus:border-blue-500 rounded-2xl outline-none font-bold appearance-none cursor-pointer"
+            >
+              {GRADE_LEVELS.map(level => (
+                <option key={level} value={level}>{level}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-2 md:col-span-3">
             <label className="text-sm font-bold text-gray-500 uppercase">주제</label>
             <input 
               type="text" 
@@ -240,22 +328,89 @@ export const TeacherMode: React.FC<TeacherModeProps> = ({ onClose, onLessonAdded
   }
 
   return (
-    <div className="space-y-8 py-8">
-      <div className="flex justify-between items-center">
+    <div className="space-y-8 py-8 px-8 min-h-[400px] flex flex-col">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <h2 className="text-3xl font-black text-gray-900">선생님 관리 도구</h2>
-        <button 
-          onClick={startNewLesson}
-          className="bg-blue-600 text-white px-6 py-3 rounded-2xl font-bold shadow-lg hover:bg-blue-700 transition-all flex items-center gap-2"
-        >
-          <Plus size={24} /> 새 레슨 추가
-        </button>
+        <div className="flex gap-3 w-full md:w-auto">
+          <button 
+            onClick={() => setShowAiPanel(!showAiPanel)}
+            className="flex-1 md:flex-none bg-indigo-600 text-white px-6 py-3 rounded-2xl font-bold shadow-lg hover:bg-indigo-700 transition-all flex items-center justify-center gap-2"
+          >
+            <Sparkles size={20} /> AI 자동 생성
+          </button>
+          <button 
+            onClick={startNewLesson}
+            className="flex-1 md:flex-none bg-blue-600 text-white px-6 py-3 rounded-2xl font-bold shadow-lg hover:bg-blue-700 transition-all flex items-center justify-center gap-2"
+          >
+            <Plus size={24} /> 새 레슨 추가
+          </button>
+        </div>
       </div>
+
+      {showAiPanel && (
+        <div className="bg-indigo-50 p-8 rounded-[32px] border-2 border-indigo-100 space-y-6 animate-in fade-in slide-in-from-top-4 duration-300">
+          <div className="flex items-center gap-3 text-indigo-900">
+            <Sparkles className="text-indigo-600" size={32} />
+            <div>
+              <h3 className="text-2xl font-black">AI 레슨 자동 생성기</h3>
+              <p className="text-indigo-700 font-medium">주제와 수준만 입력하면 전체 레슨이 완성됩니다.</p>
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="md:col-span-2">
+              <label className="block text-xs font-bold text-indigo-400 uppercase mb-2 ml-1">주제 (Topic)</label>
+              <input 
+                type="text" 
+                value={aiTopic}
+                onChange={e => setAiTopic(e.target.value)}
+                placeholder="예: 우주 여행, 나의 하루, 동물 친구들..."
+                className="w-full p-4 bg-white border-2 border-indigo-100 focus:border-indigo-500 rounded-2xl outline-none font-bold"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-indigo-400 uppercase mb-2 ml-1">수준 (Level)</label>
+              <select 
+                value={aiLevel}
+                onChange={e => setAiLevel(e.target.value)}
+                className="w-full p-4 bg-white border-2 border-indigo-100 focus:border-indigo-500 rounded-2xl outline-none font-bold appearance-none cursor-pointer"
+              >
+                {GRADE_LEVELS.map(level => (
+                  <option key={level} value={level}>{level}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-3">
+            <button 
+              onClick={() => setShowAiPanel(false)}
+              className="px-6 py-3 font-bold text-indigo-400 hover:text-indigo-600"
+            >
+              취소
+            </button>
+            <button 
+              onClick={generateLessonWithAI}
+              disabled={isGenerating || !aiTopic}
+              className="bg-indigo-600 text-white px-8 py-3 rounded-2xl font-bold shadow-lg hover:bg-indigo-700 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isGenerating ? <Loader2 className="animate-spin" size={20} /> : <Wand2 size={20} />}
+              {isGenerating ? 'AI가 생성 중...' : '레슨 생성하기'}
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-4">
         {lessons.map(lesson => (
           <div key={lesson.id} className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 flex justify-between items-center">
             <div>
-              <h3 className="text-xl font-bold text-gray-900">{lesson.title}</h3>
+              <div className="flex items-center gap-2 mb-1">
+                <h3 className="text-xl font-bold text-gray-900">{lesson.title}</h3>
+                <span className="px-2 py-0.5 bg-blue-50 text-blue-600 text-xs font-bold rounded-md border border-blue-100">
+                  {lesson.level}
+                </span>
+              </div>
               <p className="text-gray-500 font-medium">{lesson.topic} • {lesson.sentences.length} 문장</p>
             </div>
             <div className="flex gap-2">
