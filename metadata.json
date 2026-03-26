@@ -1,0 +1,7 @@
+{
+  "name": "초등 영어 마스터 (Elementary English Master)",
+  "description": "수업 흐름을 반영한 초등학생 맞춤형 영어 학습 앱. 듣기, 말하기, 읽기, 쓰기를 하나의 지문으로 통합 학습합니다.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
