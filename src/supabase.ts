@@ -15,9 +15,10 @@ if (rawUrl) {
   if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
     supabaseUrl = rawUrl;
   } else if (rawUrl.length > 0) {
-    // ID만 입력된 경우 자동으로 URL 생성
-    supabaseUrl = `https://${rawUrl}.supabase.co`;
-    console.log('Constructed Supabase URL from ID:', supabaseUrl);
+    // ID만 입력된 경우 자동으로 URL 생성, 이미 .supabase.co가 포함되어 있다면 그대로 사용
+    const cleanUrl = rawUrl.includes('.supabase.co') ? rawUrl : `${rawUrl}.supabase.co`;
+    supabaseUrl = `https://${cleanUrl}`;
+    console.log('Constructed Supabase URL:', supabaseUrl);
   }
 }
 

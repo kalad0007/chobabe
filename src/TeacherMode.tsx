@@ -25,9 +25,17 @@ export const TeacherMode: React.FC<TeacherModeProps> = ({ onClose, onLessonAdded
     setIsLoading(false);
   };
 
+  const generateId = () => {
+    if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  };
+
   const startNewLesson = () => {
     setEditingLesson({
-      id: `lesson-${Date.now()}`,
+      id: generateId(),
       title: '',
       topic: '',
       level: 'Elementary',

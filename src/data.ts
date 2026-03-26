@@ -83,7 +83,109 @@ export const SAMPLE_LESSON: Lesson = {
   ]
 };
 
+export interface Profile {
+  id: string;
+  email: string;
+  role: 'teacher' | 'student';
+  name: string;
+  class_code?: string;
+}
+
+export interface Class {
+  id: string;
+  name: string;
+  code: string;
+  teacher_id: string;
+  created_at?: string;
+}
+
+export interface HomeworkAssignment {
+  id: string;
+  lesson_id: string;
+  class_id: string;
+  created_at?: string;
+}
+
+export interface HomeworkResult {
+  id?: string;
+  user_id: string;
+  lesson_id: string;
+  score: number;
+  total: number;
+  completed_at: string;
+  user_name?: string;
+  lesson_title?: string;
+}
+
 // --- Supabase Operations ---
+
+export const getProfile = async (userId: string): Promise<Profile | null> => {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('id', userId)
+    .single();
+
+  if (error) return null;
+  return data as Profile;
+};
+
+export const saveProfile = async (profile: Profile) => {
+  const { error } = await supabase
+    .from('profiles')
+    .upsert(profile);
+  
+  if (error) {
+    console.error('Error saving profile:', error);
+  }
+  return { success: !error, error: error?.message };
+};
+
+export const saveHomeworkResult = async (result: HomeworkResult) => {
+  const { error } = await supabase
+    .from('homework_results')
+    .insert(result);
+  return { success: !error, error: error?.message };
+};
+
+export const fetchAllHomeworkResults = async (): Promise<HomeworkResult[]> => {
+  const { data, error } = await supabase
+    .from('homework_results')
+    .select(`
+      *,
+      profiles:user_id (name),
+      lessons:lesson_id (title)
+    `)
+    .order('completed_at', { ascending: false });
+
+  if (error) {
+    console.error('Error fetching results:', error);
+    return [];
+  }
+
+  return data.map(item => ({
+    ...item,
+    user_name: item.profiles?.name,
+    lesson_title: item.lessons?.title
+  })) as HomeworkResult[];
+};
+
+export const fetchStudentResults = async (userId: string): Promise<HomeworkResult[]> => {
+  const { data, error } = await supabase
+    .from('homework_results')
+    .select(`
+      *,
+      lessons:lesson_id (title)
+    `)
+    .eq('user_id', userId)
+    .order('completed_at', { ascending: false });
+
+  if (error) return [];
+  return data.map(item => ({
+    ...item,
+    lesson_title: item.lessons?.title
+  })) as HomeworkResult[];
+};
 
 export const fetchLessons = async (): Promise<Lesson[]> => {
   const { data, error } = await supabase
@@ -93,7 +195,7 @@ export const fetchLessons = async (): Promise<Lesson[]> => {
 
   if (error) {
     console.error('Error fetching lessons:', error);
-    return [SAMPLE_LESSON];
+    throw error;
   }
 
   if (!data || data.length === 0) {
@@ -127,4 +229,138 @@ export const deleteLessonFromSupabase = async (id: string): Promise<{ success: b
     return { success: false, error: error.message };
   }
   return { success: true };
+};
+
+// --- Class Operations ---
+
+export const fetchClasses = async (teacherId: string): Promise<Class[]> => {
+  const { data, error } = await supabase
+    .from('classes')
+    .select('*')
+    .eq('teacher_id', teacherId)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    console.error('Error fetching classes:', error);
+    return [];
+  }
+  return data as Class[];
+};
+
+export const saveClass = async (cls: Class): Promise<{ success: boolean; error?: string }> => {
+  const { error } = await supabase
+    .from('classes')
+    .upsert(cls);
+
+  if (error) {
+    console.error('Error saving class:', error);
+    return { success: false, error: error.message };
+  }
+  return { success: true };
+};
+
+export const deleteClass = async (id: string): Promise<{ success: boolean; error?: string }> => {
+  const { error } = await supabase
+    .from('classes')
+    .delete()
+    .eq('id', id);
+
+  if (error) {
+    console.error('Error deleting class:', error);
+    return { success: false, error: error.message };
+  }
+  return { success: true };
+};
+
+// --- Assignment Operations ---
+
+export const fetchAssignments = async (classId: string): Promise<HomeworkAssignment[]> => {
+  const { data, error } = await supabase
+    .from('homework_assignments')
+    .select('*')
+    .eq('class_id', classId);
+
+  if (error) {
+    console.error('Error fetching assignments:', error);
+    return [];
+  }
+  return data as HomeworkAssignment[];
+};
+
+export const saveAssignment = async (assignment: HomeworkAssignment): Promise<{ success: boolean; error?: string }> => {
+  const { error } = await supabase
+    .from('homework_assignments')
+    .upsert(assignment);
+
+  if (error) {
+    console.error('Error saving assignment:', error);
+    return { success: false, error: error.message };
+  }
+  return { success: true };
+};
+
+export const deleteAssignment = async (lessonId: string, classId: string): Promise<{ success: boolean; error?: string }> => {
+  const { error } = await supabase
+    .from('homework_assignments')
+    .delete()
+    .match({ lesson_id: lessonId, class_id: classId });
+
+  if (error) {
+    console.error('Error deleting assignment:', error);
+    return { success: false, error: error.message };
+  }
+  return { success: true };
+};
+
+export const fetchLessonsByClass = async (classCode: string): Promise<Lesson[]> => {
+  // 1. Get class ID from code
+  const { data: classData, error: classError } = await supabase
+    .from('classes')
+    .select('id')
+    .eq('code', classCode)
+    .single();
+
+  if (classError || !classData) {
+    console.error('Error fetching class by code:', classError);
+    return [];
+  }
+
+  // 2. Get assigned lesson IDs
+  const { data: assignmentData, error: assignError } = await supabase
+    .from('homework_assignments')
+    .select('lesson_id')
+    .eq('class_id', classData.id);
+
+  if (assignError) {
+    console.error('Error fetching assignments:', assignError);
+    return [];
+  }
+
+  if (!assignmentData || assignmentData.length === 0) return [];
+
+  const lessonIds = assignmentData.map(a => a.lesson_id);
+
+  // 3. Get lessons
+  const { data: lessonData, error: lessonError } = await supabase
+    .from('lessons')
+    .select('*')
+    .in('id', lessonIds);
+
+  if (lessonError) {
+    console.error('Error fetching lessons by IDs:', lessonError);
+    return [];
+  }
+
+  return lessonData as Lesson[];
+};
+
+export const checkClassCode = async (code: string): Promise<boolean> => {
+  const { data, error } = await supabase
+    .from('classes')
+    .select('id')
+    .eq('code', code)
+    .single();
+
+  if (error || !data) return false;
+  return true;
 };

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, Component, ErrorInfo, ReactNode } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Play, 
@@ -28,8 +28,12 @@ import {
   Layout
 } from 'lucide-react';
 import { TeacherMode } from './TeacherMode';
-import { SAMPLE_LESSON, Lesson, Sentence, Word, fetchLessons } from './data';
-import { Loader2 } from 'lucide-react';
+import { SAMPLE_LESSON, Lesson, Sentence, Word, fetchLessons, Profile, saveHomeworkResult } from './data';
+import { Loader2, LogOut, AlertTriangle } from 'lucide-react';
+import { Auth } from './Auth';
+import { StudentDashboard } from './StudentDashboard';
+import { TeacherDashboard } from './TeacherDashboard';
+import { supabase } from './supabase';
 
 // --- Types ---
 type AppMode = 'CLASSROOM' | 'SELF_STUDY' | 'HOMEWORK' | 'TEACHER';
@@ -96,7 +100,9 @@ const Button = ({
 // --- Main App ---
 
 export default function App() {
-  const [mode, setMode] = useState<AppMode>('CLASSROOM');
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [mode, setMode] = useState<AppMode | null>(null);
   const [step, setStep] = useState<LessonStep>('INTRO');
   const [lessons, setLessons] = useState<Lesson[]>([]);
   const [currentLessonId, setCurrentLessonId] = useState<string>('');
@@ -112,6 +118,90 @@ export default function App() {
   const [vocabTestIndex, setVocabTestIndex] = useState(0);
   const [vocabTestScore, setVocabTestScore] = useState(0);
   const [feedback, setFeedback] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [isPreviewMode, setIsPreviewMode] = useState(false);
+  const [configError, setConfigError] = useState<string | null>(null);
+
+  // Auth check
+  useEffect(() => {
+    const checkAuth = async () => {
+      // Check if Supabase is configured
+      const isPlaceholder = (supabase as any).supabaseUrl?.includes('placeholder') || (supabase as any).supabaseKey === 'placeholder-key';
+      if (isPlaceholder) {
+        setConfigError('Supabase is not configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your environment variables.');
+        setIsAuthLoading(false);
+        return;
+      }
+
+      // Add a timeout to the auth check to prevent hanging
+      const timeoutId = setTimeout(() => {
+        if (isAuthLoading) {
+          console.warn('Auth check timed out');
+          setIsAuthLoading(false);
+        }
+      }, 5000);
+
+      try {
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        
+        if (sessionError) {
+          console.error('Supabase session error:', sessionError);
+          setIsAuthLoading(false);
+          clearTimeout(timeoutId);
+          return;
+        }
+
+        if (!session) {
+          setIsAuthLoading(false);
+          clearTimeout(timeoutId);
+          return;
+        }
+
+        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        
+        if (authError) {
+          // If there's an error with the session (like invalid refresh token), 
+          // clear the session to allow a clean login
+          if (authError.message.includes('refresh_token_not_found') || authError.message.includes('Invalid Refresh Token')) {
+            await supabase.auth.signOut();
+          } else if (authError.message !== 'Auth session missing!') {
+            console.error('Supabase auth error:', authError);
+          }
+          setIsAuthLoading(false);
+          clearTimeout(timeoutId);
+          return;
+        }
+
+        if (user) {
+          const { data: profileData, error: profileError } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', user.id)
+            .single();
+          
+          if (profileError) {
+            console.error('Profile fetch error:', profileError);
+          }
+
+          if (profileData) {
+            setProfile(profileData as Profile);
+          }
+        }
+      } catch (err) {
+        console.error('Auth check error:', err);
+        setConfigError(err instanceof Error ? err.message : 'Failed to connect to authentication service.');
+      } finally {
+        setIsAuthLoading(false);
+        clearTimeout(timeoutId);
+      }
+    };
+    checkAuth();
+  }, []);
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setProfile(null);
+    setMode(null);
+  };
 
   const loadLessons = useCallback(async () => {
     setIsLoading(true);
@@ -155,7 +245,7 @@ export default function App() {
   };
 
   // --- Step Management ---
-  const nextStep = () => {
+  const nextStep = async () => {
     const steps: LessonStep[] = [
       'INTRO', 'FULL_LISTENING', 'COMPREHENSION', 'SENTENCE_PRACTICE', 
       'FULL_SCRIPT', 'READING_CLASS', 'GRAMMAR', 'VOCAB', 'LESSON_FINISHED',
@@ -164,18 +254,32 @@ export default function App() {
     ];
     const currentIndex = steps.indexOf(step);
     if (currentIndex < steps.length - 1) {
-      setStep(steps[currentIndex + 1]);
+      const next = steps[currentIndex + 1];
+      
+      // If moving to COMPLETED, save results
+      if (next === 'COMPLETED' && profile && !isPreviewMode) {
+        const total = (lesson.sentences.length * 2) + lesson.vocab.length;
+        await saveHomeworkResult({
+          user_id: profile.id,
+          lesson_id: lesson.id,
+          score: homeworkScore + vocabTestScore,
+          total: total,
+          completed_at: new Date().toISOString()
+        });
+      }
+      
+      setStep(next);
       stopSpeaking();
       // Reset state for specific steps
-      if (steps[currentIndex + 1] === 'HOMEWORK_DICTATION') {
+      if (next === 'HOMEWORK_DICTATION') {
         setCurrentSentenceIndex(0);
         setDictationInput('');
       }
-      if (steps[currentIndex + 1] === 'HOMEWORK_UNSCRAMBLE') {
+      if (next === 'HOMEWORK_UNSCRAMBLE') {
         setCurrentSentenceIndex(0);
         initUnscramble(0);
       }
-      if (steps[currentIndex + 1] === 'HOMEWORK_VOCAB_TEST') {
+      if (next === 'HOMEWORK_VOCAB_TEST') {
         setVocabTestIndex(0);
         setVocabTestScore(0);
       }
@@ -727,49 +831,106 @@ export default function App() {
     </div>
   );
 
-  if (isLoading) {
+  if (isAuthLoading) {
     return (
-      <div className="min-h-screen bg-blue-50 flex flex-col items-center justify-center space-y-4">
-        <Loader2 className="w-16 h-16 text-blue-500 animate-spin" />
-        <p className="text-xl font-black text-blue-900">영웅 영어 로딩 중...</p>
+      <div className="min-h-screen bg-[#F8F9FA] flex flex-col items-center justify-center space-y-4">
+        <Loader2 className="w-16 h-16 text-[#4A90E2] animate-spin" />
+        <p className="text-xl font-black text-[#4A90E2]">Little English Stars Loading...</p>
       </div>
     );
   }
 
+  if (configError) {
+    return (
+      <div className="min-h-screen bg-orange-50 flex flex-col items-center justify-center p-6 text-center">
+        <AlertTriangle className="w-16 h-16 text-orange-500 mb-4" />
+        <h1 className="text-2xl font-bold text-orange-900 mb-2">Configuration Required</h1>
+        <p className="text-orange-700 mb-6 max-w-md">
+          {configError}
+        </p>
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-orange-100 text-left w-full max-w-md">
+          <p className="text-xs font-black text-gray-400 uppercase tracking-widest mb-2">How to fix:</p>
+          <ol className="text-sm text-gray-600 list-decimal list-inside space-y-2">
+            <li>Go to your Vercel project settings.</li>
+            <li>Add <code className="bg-gray-100 px-1 rounded">VITE_SUPABASE_URL</code></li>
+            <li>Add <code className="bg-gray-100 px-1 rounded">VITE_SUPABASE_ANON_KEY</code></li>
+            <li>Redeploy your application.</li>
+          </ol>
+        </div>
+        <button 
+          onClick={() => window.location.reload()}
+          className="mt-8 px-6 py-3 bg-orange-600 text-white rounded-2xl font-bold hover:bg-orange-700 transition-all"
+        >
+          Check Again
+        </button>
+      </div>
+    );
+  }
+
+  if (!profile) {
+    return (
+      <Auth onAuthSuccess={setProfile} />
+    );
+  }
+
+  if (!mode && !isPreviewMode) {
+    if (profile.role === 'teacher') {
+      return (
+        <TeacherDashboard 
+          profile={profile} 
+          onLogout={handleLogout}
+          onPreviewLesson={(l) => {
+            setCurrentLessonId(l.id);
+            setMode('CLASSROOM');
+            setStep('INTRO');
+            setIsPreviewMode(true);
+          }}
+        />
+      );
+    } else {
+      return (
+        <StudentDashboard 
+          profile={profile} 
+          onLogout={handleLogout}
+          onSelectLesson={(l) => {
+            setCurrentLessonId(l.id);
+            setMode('HOMEWORK');
+            setStep('INTRO');
+          }}
+        />
+      );
+    }
+  }
+
   return (
-    <div className="min-h-screen bg-[#FDFCF8] text-gray-900 font-sans selection:bg-blue-100">
+    <div className="min-h-screen bg-[#F8F9FA] text-gray-900 font-sans selection:bg-blue-100 pb-20 md:pb-0">
       {/* Header */}
       <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-gray-100 px-6 py-4 flex justify-between items-center">
-        <div className="flex items-center gap-2">
-          <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white font-black">E</div>
-          <span className="font-black text-xl tracking-tight">Little English Stars</span>
+        <div className="flex items-center gap-4">
+          <button 
+            onClick={() => {
+              setMode(null);
+              setIsPreviewMode(false);
+            }}
+            className="p-3 bg-white rounded-2xl shadow-sm hover:shadow-md transition-all text-[#636E72] border border-gray-100"
+          >
+            <Home size={24} />
+          </button>
+          <div>
+            <h1 className="text-xl font-black text-[#2D3436] tracking-tight">{lesson.title}</h1>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-black text-[#4A90E2] uppercase tracking-widest">{mode}</span>
+              {isPreviewMode && (
+                <span className="text-[10px] font-black text-[#FF9800] uppercase tracking-widest bg-[#FFF3E0] px-2 py-0.5 rounded">PREVIEW</span>
+              )}
+            </div>
+          </div>
         </div>
         
-        <div className="flex bg-gray-100 p-1 rounded-xl">
-          <button 
-            onClick={() => setMode('CLASSROOM')}
-            className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${mode === 'CLASSROOM' ? 'bg-white shadow-sm text-blue-600' : 'text-gray-500'}`}
-          >
-            수업 모드
-          </button>
-          <button 
-            onClick={() => setMode('HOMEWORK')}
-            className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${mode === 'HOMEWORK' ? 'bg-white shadow-sm text-purple-600' : 'text-gray-500'}`}
-          >
-            과제 모드
-          </button>
-          <button 
-            onClick={() => setMode('TEACHER')}
-            className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${mode === 'TEACHER' ? 'bg-white shadow-sm text-red-600' : 'text-gray-500'}`}
-          >
-            선생님 모드
-          </button>
-        </div>
-
         <div className="flex items-center gap-4">
-          <div className="hidden md:flex items-center gap-2 bg-yellow-50 px-3 py-1 rounded-full border border-yellow-100">
-            <Star size={16} className="text-yellow-500 fill-yellow-500" />
-            <span className="text-sm font-bold text-yellow-700">1,240</span>
+          <div className="hidden md:flex items-center gap-2 bg-white px-4 py-2 rounded-2xl shadow-sm border border-gray-100">
+            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+            <span className="text-xs font-black text-gray-500 uppercase tracking-widest">Step {step}</span>
           </div>
           <button className="p-2 text-gray-400 hover:text-gray-600"><Settings size={24} /></button>
         </div>
@@ -777,37 +938,30 @@ export default function App() {
 
       {/* Main Content */}
       <main className="max-w-4xl mx-auto px-6 py-8">
-        {mode === 'TEACHER' ? (
-          <TeacherMode 
-            onClose={() => setMode('CLASSROOM')} 
-            onLessonAdded={refreshLessons}
-          />
-        ) : (
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={step}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              transition={{ duration: 0.3 }}
-            >
-              {step === 'INTRO' && renderIntro()}
-              {step === 'FULL_LISTENING' && renderFullListening()}
-              {step === 'COMPREHENSION' && renderComprehension()}
-              {step === 'SENTENCE_PRACTICE' && renderSentencePractice()}
-              {step === 'FULL_SCRIPT' && renderFullScript()}
-              {step === 'READING_CLASS' && renderReadingClass()}
-              {step === 'GRAMMAR' && renderGrammar()}
-              {step === 'VOCAB' && renderVocab()}
-              {step === 'LESSON_FINISHED' && renderLessonFinished()}
-              {step === 'HOMEWORK_INTRO' && renderHomeworkIntro()}
-              {step === 'HOMEWORK_DICTATION' && renderHomeworkDictation()}
-              {step === 'HOMEWORK_UNSCRAMBLE' && renderHomeworkUnscramble()}
-              {step === 'HOMEWORK_VOCAB_TEST' && renderHomeworkVocabTest()}
-              {step === 'COMPLETED' && renderCompleted()}
-            </motion.div>
-          </AnimatePresence>
-        )}
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={step}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.3 }}
+          >
+            {step === 'INTRO' && renderIntro()}
+            {step === 'FULL_LISTENING' && renderFullListening()}
+            {step === 'COMPREHENSION' && renderComprehension()}
+            {step === 'SENTENCE_PRACTICE' && renderSentencePractice()}
+            {step === 'FULL_SCRIPT' && renderFullScript()}
+            {step === 'READING_CLASS' && renderReadingClass()}
+            {step === 'GRAMMAR' && renderGrammar()}
+            {step === 'VOCAB' && renderVocab()}
+            {step === 'LESSON_FINISHED' && renderLessonFinished()}
+            {step === 'HOMEWORK_INTRO' && renderHomeworkIntro()}
+            {step === 'HOMEWORK_DICTATION' && renderHomeworkDictation()}
+            {step === 'HOMEWORK_UNSCRAMBLE' && renderHomeworkUnscramble()}
+            {step === 'HOMEWORK_VOCAB_TEST' && renderHomeworkVocabTest()}
+            {step === 'COMPLETED' && renderCompleted()}
+          </motion.div>
+        </AnimatePresence>
       </main>
 
       {feedback && (
@@ -824,7 +978,7 @@ export default function App() {
       )}
 
       {/* Navigation Footer (Optional for some steps) */}
-      {['INTRO', 'COMPLETED', 'HOMEWORK_INTRO'].indexOf(step) === -1 && (
+      {['INTRO', 'COMPLETED', 'HOMEWORK_INTRO', 'LESSON_FINISHED'].indexOf(step) === -1 && (
         <footer className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 p-4 md:hidden">
           <div className="flex justify-between max-w-4xl mx-auto">
             <Button variant="ghost" onClick={prevStep}><ChevronLeft /> 이전</Button>
@@ -832,6 +986,6 @@ export default function App() {
           </div>
         </footer>
       )}
-    </div>
+      </div>
   );
 }
